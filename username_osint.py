@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 
-import sys
 import requests
 from bs4 import BeautifulSoup
-from colorama import Fore, Style, init
-import time
-import json
+from colorama import init
 import re
-from googlesearch import search
 import phonenumbers
+from googlesearch import search
+import streamlit as st
+import time
 
 init(autoreset=True)
 
@@ -40,160 +39,103 @@ class UsernameOSINT:
                     "email": data.get("email")
                 }
         except Exception as e:
-            print(f"Error checking GitHub: {e}")
+            st.error(f"Error checking GitHub: {e}")
         return {"exists": False}
 
-    def check_instagram(self):
-        """Check Instagram profile"""
+    def check_platform(self, url):
+        """Check generic platform profile"""
         try:
-            response = requests.get(f"https://www.instagram.com/{self.username}/", headers=self.headers)
+            response = requests.get(url, headers=self.headers)
             return {"exists": response.status_code == 200}
         except Exception as e:
-            print(f"Error checking Instagram: {e}")
+            st.error(f"Error checking platform: {e}")
             return {"exists": False}
 
-    def check_twitter(self):
-        """Check Twitter/X profile"""
+    def search_web(self, search_query, pattern):
+        """Generic web search for emails or phone numbers"""
+        found_items = set()
         try:
-            response = requests.get(f"https://twitter.com/{self.username}", headers=self.headers)
-            return {"exists": response.status_code == 200}
-        except Exception as e:
-            print(f"Error checking Twitter: {e}")
-            return {"exists": False}
-
-    def check_linkedin(self):
-        """Check LinkedIn profile"""
-        try:
-            response = requests.get(f"https://www.linkedin.com/in/{self.username}/", headers=self.headers)
-            return {"exists": response.status_code == 200}
-        except Exception as e:
-            print(f"Error checking LinkedIn: {e}")
-            return {"exists": False}
-
-    def check_medium(self):
-        """Check Medium profile"""
-        try:
-            response = requests.get(f"https://medium.com/@{self.username}", headers=self.headers)
-            return {"exists": response.status_code == 200}
-        except Exception as e:
-            print(f"Error checking Medium: {e}")
-            return {"exists": False}
-
-    def search_whatsapp(self):
-        """Search for potential WhatsApp numbers"""
-        found_numbers = set()
-        search_query = f"{self.username} whatsapp contact"
-        
-        try:
-            # Search for potential pages containing WhatsApp numbers
             search_results = search(search_query, num_results=10)
-            
             for url in search_results:
                 try:
                     response = requests.get(url, headers=self.headers, timeout=5)
                     if response.status_code == 200:
-                        # Find potential phone numbers
-                        numbers = self.phone_pattern.findall(response.text)
-                        for number in numbers:
-                            try:
-                                parsed_number = phonenumbers.parse(number)
-                                if phonenumbers.is_valid_number(parsed_number):
-                                    formatted_number = phonenumbers.format_number(
-                                        parsed_number, 
-                                        phonenumbers.PhoneNumberFormat.INTERNATIONAL
-                                    )
-                                    found_numbers.add(formatted_number)
-                            except:
-                                continue
+                        items = pattern.findall(response.text)
+                        found_items.update(items)
                 except:
                     continue
-                
         except Exception as e:
-            print(f"Error searching WhatsApp: {e}")
-        
-        return list(found_numbers)
+            st.error(f"Error searching web: {e}")
+        return list(found_items)
 
     def search_emails(self):
-        """Search for email addresses"""
-        found_emails = set()
-        search_query = f"{self.username} email contact"
-        
-        try:
-            # Search for potential pages containing email addresses
-            search_results = search(search_query, num_results=10)
-            
-            for url in search_results:
-                try:
-                    response = requests.get(url, headers=self.headers, timeout=5)
-                    if response.status_code == 200:
-                        # Find email addresses
-                        emails = self.email_pattern.findall(response.text)
-                        found_emails.update(emails)
-                except:
-                    continue
-                
-        except Exception as e:
-            print(f"Error searching emails: {e}")
-        
-        return list(found_emails)
+        return self.search_web(f"{self.username} email contact", self.email_pattern)
 
-    def run_search(self):
-        """Run all searches"""
-        print(f"\n{Fore.CYAN}[*] Searching for username: {self.username}{Style.RESET_ALL}\n")
+    def search_whatsapp(self):
+        found_numbers = self.search_web(f"{self.username} whatsapp contact", self.phone_pattern)
+        valid_numbers = []
+        for number in found_numbers:
+            try:
+                parsed_number = phonenumbers.parse(number)
+                if phonenumbers.is_valid_number(parsed_number):
+                    formatted_number = phonenumbers.format_number(
+                        parsed_number, phonenumbers.PhoneNumberFormat.INTERNATIONAL
+                    )
+                    valid_numbers.append(formatted_number)
+            except:
+                continue
+        return valid_numbers
 
-        # Check social media platforms
+# Streamlit App
+st.title("Username OSINT Tool")
+st.markdown("This tool helps you gather OSINT information about a username across multiple platforms.")
+
+username = st.text_input("Enter a username to search:")
+
+if st.button("Run OSINT"):
+    if username:
+        osint = UsernameOSINT(username)
+        
+        st.subheader("Social Media Profiles")
         platforms = {
-            "GitHub": self.check_github,
-            "Instagram": self.check_instagram,
-            "Twitter": self.check_twitter,
-            "LinkedIn": self.check_linkedin,
-            "Medium": self.check_medium
+            "GitHub": lambda: osint.check_github(),
+            "Instagram": lambda: osint.check_platform(f"https://www.instagram.com/{username}/"),
+            "Twitter": lambda: osint.check_platform(f"https://twitter.com/{username}"),
+            "LinkedIn": lambda: osint.check_platform(f"https://www.linkedin.com/in/{username}/"),
+            "Medium": lambda: osint.check_platform(f"https://medium.com/@{username}")
         }
+        
+        for platform, check_function in platforms.items():
+            with st.spinner(f"Checking {platform}..."):
+                result = check_function()
+                if platform == "GitHub" and result["exists"]:
+                    st.success(f"{platform} profile found!")
+                    for key, value in result.items():
+                        if key != "exists" and value:
+                            st.write(f"- {key}: {value}")
+                elif result["exists"]:
+                    st.success(f"{platform} profile found!")
+                else:
+                    st.error(f"No {platform} profile found.")
 
-        for platform_name, check_function in platforms.items():
-            print(f"{Fore.CYAN}[*] Checking {platform_name}...{Style.RESET_ALL}")
-            result = check_function()
-            
-            if platform_name == "GitHub" and result["exists"]:
-                print(f"{Fore.GREEN}[+] GitHub profile found:{Style.RESET_ALL}")
-                for key, value in result.items():
-                    if key != "exists" and value:
-                        print(f"    {key}: {value}")
-            elif result["exists"]:
-                print(f"{Fore.GREEN}[+] {platform_name} profile found: {self.username}{Style.RESET_ALL}")
-            else:
-                print(f"{Fore.RED}[-] No {platform_name} profile found{Style.RESET_ALL}")
-            
-            time.sleep(1)
-
-        # Search for WhatsApp numbers
-        print(f"\n{Fore.CYAN}[*] Searching for potential WhatsApp numbers...{Style.RESET_ALL}")
-        whatsapp_numbers = self.search_whatsapp()
-        if whatsapp_numbers:
-            print(f"{Fore.GREEN}[+] Found potential WhatsApp numbers:{Style.RESET_ALL}")
-            for number in whatsapp_numbers:
-                print(f"    {number}")
-        else:
-            print(f"{Fore.RED}[-] No WhatsApp numbers found{Style.RESET_ALL}")
-
-        # Search for email addresses
-        print(f"\n{Fore.CYAN}[*] Searching for email addresses...{Style.RESET_ALL}")
-        emails = self.search_emails()
+        st.subheader("Searching for Emails")
+        with st.spinner("Searching for emails..."):
+            emails = osint.search_emails()
         if emails:
-            print(f"{Fore.GREEN}[+] Found potential email addresses:{Style.RESET_ALL}")
+            st.success(f"Found {len(emails)} email(s):")
             for email in emails:
-                print(f"    {email}")
+                st.write(f"- {email}")
         else:
-            print(f"{Fore.RED}[-] No email addresses found{Style.RESET_ALL}")
+            st.error("No email addresses found.")
 
-def main():
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <username>")
-        sys.exit(1)
-
-    username = sys.argv[1]
-    osint = UsernameOSINT(username)
-    osint.run_search()
-
-if __name__ == "__main__":
-    main()
+        st.subheader("Searching for WhatsApp Numbers")
+        with st.spinner("Searching for WhatsApp numbers..."):
+            whatsapp_numbers = osint.search_whatsapp()
+        if whatsapp_numbers:
+            st.success(f"Found {len(whatsapp_numbers)} number(s):")
+            for number in whatsapp_numbers:
+                st.write(f"- {number}")
+        else:
+            st.error("No WhatsApp numbers found.")
+    else:
+        st.error("Please enter a username to proceed.")
